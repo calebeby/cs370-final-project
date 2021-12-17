@@ -1,0 +1,7 @@
+<h1>{{header}}</h1>
+
+<ul>
+  {% for person in persons %}
+    <li><a href="{{ person.url }}">{{ person.firstname }} {{ person.lastname }}</a></li>
+  {% endfor %}
+</ul>
