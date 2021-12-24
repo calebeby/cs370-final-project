@@ -252,7 +252,7 @@ fn parse_tag_contents<'a>(
         }
     }
     // Remove trailing whitespace children
-    while let [.., html_ast_node::Child::Whitespace] = children[..] {
+    while let Some(html_ast_node::Child::Whitespace) = children.last() {
         children.pop();
     }
     Ok((html_ast_node::Children(children), remaining_tokens))
