@@ -1,6 +1,10 @@
 use crate::ir::ToIR;
+use crate::ir::IR;
+use crate::langs::html;
+use crate::langs::twig;
 mod html_ast_node;
 mod ir;
+mod langs;
 use colored::*;
 use std::fmt;
 use std::fs;
@@ -202,11 +206,17 @@ fn tokenize(text: &str) -> Vec<HTMLToken> {
     tokens
 }
 
-fn parse_tag_contents<'a>(
+fn parse_tag_contents<'a, ExpressionType: ToIR>(
     tokens: &'a [HTMLToken<'a>],
-) -> Result<(html_ast_node::Children<'a>, &'a [HTMLToken<'a>]), String> {
+) -> Result<
+    (
+        html_ast_node::Children<'a, ExpressionType>,
+        &'a [HTMLToken<'a>],
+    ),
+    String,
+> {
     let mut remaining_tokens = tokens;
-    let mut children: Vec<html_ast_node::Child> = Vec::new();
+    let mut children: Vec<html_ast_node::Child<ExpressionType>> = Vec::new();
     loop {
         match parse_tag(remaining_tokens) {
             Err(err) => return Err(err),
@@ -499,9 +509,9 @@ fn parse_close_tag<'a>(
     }
 }
 
-fn parse_tag<'a>(
+fn parse_tag<'a, ExpressionType: ToIR>(
     tokens: &'a [HTMLToken<'a>],
-) -> Result<Option<(html_ast_node::Tag<'a>, &'a [HTMLToken<'a>])>, String> {
+) -> Result<Option<(html_ast_node::Tag<'a, ExpressionType>, &'a [HTMLToken<'a>])>, String> {
     let open_tag = parse_open_tag(tokens);
 
     if let Err(err) = open_tag {
@@ -561,9 +571,9 @@ fn parse_tag<'a>(
     Ok(None)
 }
 
-fn parse<'a>(
+fn parse<'a, ExpressionType: ToIR>(
     tokens: &'a [HTMLToken<'a>],
-) -> Result<html_ast_node::Children<'a>, std::string::String> {
+) -> Result<html_ast_node::Children<'a, ExpressionType>, std::string::String> {
     match parse_tag_contents(tokens) {
         Ok((contents @ html_ast_node::Children(_), remaining_tokens)) => {
             if remaining_tokens.is_empty() {
@@ -578,25 +588,51 @@ fn parse<'a>(
     }
 }
 
-fn main() {
-    let contents =
-        fs::read_to_string("examples/basic.html").expect("Something went wrong reading the file");
-    println!("contents:\n{}", contents);
-
-    let tokens = tokenize(&contents);
-    let parsed = parse(&tokens);
-    match parsed {
-        Err(err) => {
-            eprintln!("{}", err);
-        }
-        Ok(parsed) => {
-            println!("{:?}", parsed);
-            let ir = parsed.to_ir();
-            println!("{:?}", ir);
-            let output = ir.to_string(true);
-            println!("{}", output);
-            fs::write("examples/output.html", output)
-                .expect("Something went wrong writing the file");
-        }
-    }
+enum Language {
+    HTML,
+    Twig,
 }
+
+fn parse_and_print_file(filename: &str, language: Language) {
+    let contents = fs::read_to_string(filename).expect("Something went wrong reading the file");
+    let tokens = tokenize(&contents);
+    let ir: Option<IR> = match language {
+        Language::HTML => parse::<html::Expression>(&tokens)
+            .expect("Failed to parse")
+            .to_ir(),
+        Language::Twig => parse::<twig::Expression>(&tokens)
+            .expect("Failed to parse")
+            .to_ir(),
+    };
+    let output = match ir {
+        Some(ir) => ir.to_string(false),
+        None => String::new(),
+    };
+    println!("{}", output);
+}
+
+fn main() {
+    parse_and_print_file("examples/basic.twig", Language::HTML);
+}
+// fn main() {
+//     let contents =
+//         fs::read_to_string("examples/basic.html").expect("Something went wrong reading the file");
+//     println!("contents:\n{}", contents);
+
+//     let tokens = tokenize(&contents);
+//     let parsed = parse(&tokens);
+//     match parsed {
+//         Err(err) => {
+//             eprintln!("{}", err);
+//         }
+//         Ok(parsed) => {
+//             println!("{:?}", parsed);
+//             let ir = parsed.to_ir();
+//             println!("{:?}", ir);
+//             let output = ir.to_string(true);
+//             println!("{}", output);
+//             fs::write("examples/output.html", output)
+//                 .expect("Something went wrong writing the file");
+//         }
+//     }
+// }

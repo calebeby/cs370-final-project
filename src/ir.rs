@@ -4,7 +4,7 @@
 // More details: https://github.com/prettier/prettier/blob/master/commands.md
 
 pub trait ToIR {
-    fn to_ir(&self) -> IR;
+    fn to_ir(&self) -> Option<IR>;
 }
 
 #[derive(Debug)]
