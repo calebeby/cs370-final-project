@@ -9,6 +9,14 @@ use colored::*;
 use std::fmt;
 use std::fs;
 
+pub trait LangExpression: ToIR {
+    fn parse_expression<'a>(
+        tokens: &'a [HTMLToken<'a>],
+    ) -> Result<Option<(Self, &'a [HTMLToken<'a>])>, String>
+    where
+        Self: std::marker::Sized;
+}
+
 pub struct SourceLocation<'a> {
     source_entire_text: &'a str,
     /// Character index
@@ -122,7 +130,7 @@ impl fmt::Debug for SourceLocation<'_> {
 
 /// Allowed HTML tokens
 #[derive(Debug)]
-enum HTMLToken<'a> {
+pub enum HTMLToken<'a> {
     /// <
     StartBracket(SourceLocation<'a>),
     /// >
@@ -133,6 +141,9 @@ enum HTMLToken<'a> {
     Quote(SourceLocation<'a>),
     Whitespace(SourceLocation<'a>),
     Text(SourceLocation<'a>),
+    OpenCurly(SourceLocation<'a>),
+    CloseCurly(SourceLocation<'a>),
+    Percent(SourceLocation<'a>),
 }
 
 impl<'a> WithSourceLocation for HTMLToken<'a> {
@@ -144,7 +155,10 @@ impl<'a> WithSourceLocation for HTMLToken<'a> {
             | HTMLToken::Equals(source_location)
             | HTMLToken::Quote(source_location)
             | HTMLToken::Whitespace(source_location)
-            | HTMLToken::Text(source_location) => source_location,
+            | HTMLToken::Text(source_location)
+            | HTMLToken::OpenCurly(source_location)
+            | HTMLToken::CloseCurly(source_location)
+            | HTMLToken::Percent(source_location) => source_location,
         }
     }
 }
@@ -171,6 +185,9 @@ fn tokenize(text: &str) -> Vec<HTMLToken> {
 
             '>' => Some(HTMLToken::EndBracket(create_source_location(i, 1))),
             '=' => Some(HTMLToken::Equals(create_source_location(i, 1))),
+            '{' => Some(HTMLToken::OpenCurly(create_source_location(i, 1))),
+            '}' => Some(HTMLToken::CloseCurly(create_source_location(i, 1))),
+            '%' => Some(HTMLToken::Percent(create_source_location(i, 1))),
             '"' | '\'' => Some(HTMLToken::Quote(create_source_location(i, 1))),
             ' ' | '\t' | '\n' => {
                 match tokens.last_mut() {
@@ -206,7 +223,7 @@ fn tokenize(text: &str) -> Vec<HTMLToken> {
     tokens
 }
 
-fn parse_tag_contents<'a, ExpressionType: ToIR>(
+fn parse_tag_contents<'a, ExpressionType: LangExpression>(
     tokens: &'a [HTMLToken<'a>],
 ) -> Result<
     (
@@ -218,48 +235,54 @@ fn parse_tag_contents<'a, ExpressionType: ToIR>(
     let mut remaining_tokens = tokens;
     let mut children: Vec<html_ast_node::Child<ExpressionType>> = Vec::new();
     loop {
-        match parse_tag(remaining_tokens) {
-            Err(err) => return Err(err),
-            Ok(Some((tag, inner_remaining_tokens))) => {
+        match ExpressionType::parse_expression(remaining_tokens)? {
+            Some((expression, inner_remaining_tokens)) => {
+                children.push(html_ast_node::Child::Expression(expression));
                 remaining_tokens = inner_remaining_tokens;
+                continue;
+            }
+            None => {}
+        };
+        match parse_tag(remaining_tokens)? {
+            Some((tag, inner_remaining_tokens)) => {
                 children.push(html_ast_node::Child::Tag(tag));
+                remaining_tokens = inner_remaining_tokens;
+                continue;
             }
-            Ok(None) => {
-                match parse_close_tag(remaining_tokens) {
-                    Err(err) => return Err(err),
-                    // If it sees a close tag (that wasn't handled by the nested parse_tag)
-                    // Then it should end and let the parent function handle the close tag
-                    Ok(Some(_)) => break,
-                    Ok(None) => {}
-                }
-                // Did not match a tag, but there was no parsing error
-                // So take the text as text
-                match &remaining_tokens[0] {
-                    HTMLToken::StartBracket(bracket_location) => {
-                        return Err(format!(
-                            "Unexpected token {}\n\
-                             {}",
-                            bracket_location.text(),
-                            bracket_location.code_frame("Unexpected token", MessageType::Error)
-                        ))
-                    }
-                    HTMLToken::Whitespace(_) => {
-                        // Ignore leading whitespace children
-                        if !children.is_empty() {
-                            children.push(html_ast_node::Child::Whitespace);
-                        }
-                    }
-                    token => children.push(html_ast_node::Child::Text(html_ast_node::Text(
-                        token.source_location().text(),
-                    ))),
-                }
-                remaining_tokens = &remaining_tokens[1..];
-            }
+            None => {}
+        }
+        match parse_close_tag(remaining_tokens)? {
+            // If it sees a close tag (that wasn't handled by the nested parse_tag)
+            // Then it should end and let the parent function handle the unexpected close tag
+            Some(_) => break,
+            None => {}
         }
 
         if remaining_tokens.len() == 0 {
             break;
         }
+        // Did not match a tag, but there was no parsing error
+        // So take the text as text
+        match &remaining_tokens[0] {
+            HTMLToken::StartBracket(bracket_location) => {
+                return Err(format!(
+                    "Unexpected token {}\n\
+                             {}",
+                    bracket_location.text(),
+                    bracket_location.code_frame("Unexpected token", MessageType::Error)
+                ))
+            }
+            HTMLToken::Whitespace(_) => {
+                // Ignore leading whitespace children
+                if !children.is_empty() {
+                    children.push(html_ast_node::Child::Whitespace);
+                }
+            }
+            token => children.push(html_ast_node::Child::Text(html_ast_node::Text(
+                token.source_location().text(),
+            ))),
+        }
+        remaining_tokens = &remaining_tokens[1..];
     }
     // Remove trailing whitespace children
     while let Some(html_ast_node::Child::Whitespace) = children.last() {
@@ -326,9 +349,8 @@ fn parse_attribute<'a>(
         if let [HTMLToken::Equals(equals_source_location), remaining_tokens @ ..] =
             eat_whitespace(remaining_tokens)
         {
-            return match parse_attribute_value(eat_whitespace(remaining_tokens)) {
-                Err(err) => Err(err),
-                Ok(None) => Err(format!(
+            return match parse_attribute_value(eat_whitespace(remaining_tokens))? {
+                None => Err(format!(
                     "Expected value for {} attribute\n\
                      {}",
                     attr_name.source_location().text(),
@@ -337,7 +359,7 @@ fn parse_attribute<'a>(
                         MessageType::Error
                     ),
                 )),
-                Ok(Some((value, attr_end_index, remaining_tokens))) => Ok(Some((
+                Some((value, attr_end_index, remaining_tokens)) => Ok(Some((
                     html_ast_node::Attribute {
                         source_location: SourceLocation {
                             start_index: attr_name.source_location().start_index,
@@ -380,13 +402,12 @@ fn parse_attributes<'a>(
     // There should be some whitespace before/between each attribute
     while let [HTMLToken::Whitespace(_), tokens_without_whitespace @ ..] = remaining_tokens {
         remaining_tokens = tokens_without_whitespace;
-        match parse_attribute(remaining_tokens) {
-            Err(err) => return Err(err),
-            Ok(Some((attr, remaining_tokens_after_attr))) => {
+        match parse_attribute(remaining_tokens)? {
+            Some((attr, remaining_tokens_after_attr)) => {
                 attributes.push(attr);
                 remaining_tokens = remaining_tokens_after_attr;
             }
-            Ok(None) => break,
+            None => break,
         }
     }
     Ok((attributes, remaining_tokens))
@@ -401,9 +422,8 @@ fn parse_open_tag<'a>(
             source_entire_text,
             ..
         }), HTMLToken::Text(text_source_location), remaining_tokens @ ..] => {
-            match parse_attributes(remaining_tokens) {
-                Err(err) => Err(err),
-                Ok((attributes, remaining_tokens)) => match remaining_tokens {
+            match parse_attributes(remaining_tokens)? {
+                (attributes, remaining_tokens) => match remaining_tokens {
                     [HTMLToken::EndBracket(SourceLocation { end_index, .. }), remaining_tokens @ ..] =>
                     {
                         Ok(Some((
@@ -509,21 +529,17 @@ fn parse_close_tag<'a>(
     }
 }
 
-fn parse_tag<'a, ExpressionType: ToIR>(
+fn parse_tag<'a, ExpressionType: LangExpression>(
     tokens: &'a [HTMLToken<'a>],
 ) -> Result<Option<(html_ast_node::Tag<'a, ExpressionType>, &'a [HTMLToken<'a>])>, String> {
-    let open_tag = parse_open_tag(tokens);
+    let open_tag = parse_open_tag(tokens)?;
 
-    if let Err(err) = open_tag {
-        return Err(err);
-    }
-    if let Ok(Some((open_tag, remaining_tokens))) = open_tag {
-        match parse_tag_contents(remaining_tokens) {
-            Err(err) => return Err(err),
-            Ok((children, remaining_tokens)) => {
-                let close_tag = parse_close_tag(remaining_tokens);
+    if let Some((open_tag, remaining_tokens)) = open_tag {
+        match parse_tag_contents(remaining_tokens)? {
+            (children, remaining_tokens) => {
+                let close_tag = parse_close_tag(remaining_tokens)?;
                 return match close_tag {
-                    Ok(None) => Err(format!(
+                    None => Err(format!(
                         "Expected to find closing tag </{}>\n\
                          {}",
                         open_tag.tag_name,
@@ -532,8 +548,7 @@ fn parse_tag<'a, ExpressionType: ToIR>(
                             MessageType::Info
                         ),
                     )),
-                    Err(err) => Err(err),
-                    Ok(Some((close_tag, remaining_tokens))) => {
+                    Some((close_tag, remaining_tokens)) => {
                         if open_tag.tag_name != close_tag.tag_name {
                             Err(format!(
                                 "Expected to find closing tag </{}>, but found closing tag </{}>\n\
@@ -571,7 +586,7 @@ fn parse_tag<'a, ExpressionType: ToIR>(
     Ok(None)
 }
 
-fn parse<'a, ExpressionType: ToIR>(
+fn parse<'a, ExpressionType: LangExpression>(
     tokens: &'a [HTMLToken<'a>],
 ) -> Result<Vec<html_ast_node::Child<'a, ExpressionType>>, std::string::String> {
     match parse_tag_contents(tokens) {
@@ -623,7 +638,7 @@ fn main() {
         return;
     }
     let filepath = &args[1];
-    let result = parse_and_print_file(filepath, Language::HTML);
+    let result = parse_and_print_file(filepath, Language::Twig);
     match result {
         Ok(output) => {
             println!("{}", output);
