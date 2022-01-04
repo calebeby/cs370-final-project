@@ -11,12 +11,16 @@ pub trait ToIR {
 pub enum IR {
     Text(String),
     Group(Vec<IR>),
-    /// A set of IR tokens that are either single-line or broken across lines
+    /// A group where all the children break, or all the children don't break
     BreakGroup(Vec<IR>),
+    /// A line break that is always included in the output, no matter if the expression fits on one line or not.
+    HardLine,
     IfBroken {
         broken: Box<IR>,
         not_broken: Box<IR>,
     },
+    /// Tokens who have a higher indentation level
+    Indent(Vec<IR>),
 }
 
 impl IR {
@@ -45,6 +49,18 @@ impl IR {
                     output += &child.to_string(group_broken);
                 }
                 output
+            }
+            IR::HardLine => "\n".to_string(),
+            IR::Indent(children) => {
+                let mut output = String::new();
+                for child in children {
+                    output += &child.to_string(group_broken);
+                }
+                output
+                    .split("\n")
+                    .map(|line| format!("  {}", line))
+                    .collect::<Vec<String>>()
+                    .join("\n")
             }
         }
     }

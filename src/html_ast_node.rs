@@ -130,9 +130,31 @@ pub struct Children<'a, ExpressionType: ToIR>(pub Vec<Child<'a, ExpressionType>>
 impl<'a, ExpressionType: ToIR> ToIR for Children<'a, ExpressionType> {
     fn to_ir(&self) -> Option<IR> {
         let mut child_irs = Vec::new();
-        for child in &self.0 {
-            push_val_if_some(&mut child_irs, child.to_ir());
+        let num_non_text_children = self.0.len()
+            - self
+                .0
+                .iter()
+                .filter(|c| matches!(c, Child::Text(_) | Child::Whitespace))
+                .count();
+        let break_self = num_non_text_children >= 1;
+        if break_self {
+            child_irs.push(IR::HardLine);
         }
-        return Some(IR::Group(child_irs));
+        for (i, child) in self.0.iter().enumerate() {
+            if let Some(child_ir) = child.to_ir() {
+                if break_self && i > 0 {
+                    if let Child::Tag(_) = child {
+                        // Put lines before tags (after the first one)
+                        child_irs.push(IR::HardLine);
+                    }
+                }
+                child_irs.push(child_ir);
+            }
+        }
+        return Some(if break_self {
+            IR::Group(vec![IR::Indent(child_irs), IR::HardLine])
+        } else {
+            IR::Group(child_irs)
+        });
     }
 }

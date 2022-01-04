@@ -573,11 +573,11 @@ fn parse_tag<'a, ExpressionType: ToIR>(
 
 fn parse<'a, ExpressionType: ToIR>(
     tokens: &'a [HTMLToken<'a>],
-) -> Result<html_ast_node::Children<'a, ExpressionType>, std::string::String> {
+) -> Result<Vec<html_ast_node::Child<'a, ExpressionType>>, std::string::String> {
     match parse_tag_contents(tokens) {
-        Ok((contents @ html_ast_node::Children(_), remaining_tokens)) => {
+        Ok((html_ast_node::Children(children_of_root), remaining_tokens)) => {
             if remaining_tokens.is_empty() {
-                return Ok(contents);
+                return Ok(children_of_root);
             }
             Err(format!(
                 "\nRemaining tokens left over after parsing: {:?}",
@@ -593,46 +593,42 @@ enum Language {
     Twig,
 }
 
-fn parse_and_print_file(filename: &str, language: Language) {
+fn parse_and_print_file(filename: &str, language: Language) -> Result<String, String> {
     let contents = fs::read_to_string(filename).expect("Something went wrong reading the file");
     let tokens = tokenize(&contents);
-    let ir: Option<IR> = match language {
-        Language::HTML => parse::<html::Expression>(&tokens)
-            .expect("Failed to parse")
-            .to_ir(),
-        Language::Twig => parse::<twig::Expression>(&tokens)
-            .expect("Failed to parse")
-            .to_ir(),
+    let ir: Vec<Option<IR>> = match language {
+        Language::HTML => parse::<html::Expression>(&tokens)?
+            .iter()
+            .map(|child| child.to_ir())
+            .collect(),
+        Language::Twig => parse::<twig::Expression>(&tokens)?
+            .iter()
+            .map(|child| child.to_ir())
+            .collect(),
     };
-    let output = match ir {
-        Some(ir) => ir.to_string(false),
-        None => String::new(),
-    };
-    println!("{}", output);
+    Ok(ir
+        .iter()
+        .filter_map(|child| match child {
+            Some(child) => Some(child.to_string(false)),
+            None => None,
+        })
+        .collect::<Vec<String>>()
+        .join("\n"))
 }
 
 fn main() {
-    parse_and_print_file("examples/basic.twig", Language::HTML);
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 {
+        println!("Usage: {} <file>", args[0]);
+        return;
+    }
+    let filepath = &args[1];
+    let result = parse_and_print_file(filepath, Language::HTML);
+    match result {
+        Ok(output) => {
+            println!("{}", output);
+            // fs::write(filepath, output).expect("Something went wrong writing the file");
+        }
+        Err(err) => println!("{}", err),
+    }
 }
-// fn main() {
-//     let contents =
-//         fs::read_to_string("examples/basic.html").expect("Something went wrong reading the file");
-//     println!("contents:\n{}", contents);
-
-//     let tokens = tokenize(&contents);
-//     let parsed = parse(&tokens);
-//     match parsed {
-//         Err(err) => {
-//             eprintln!("{}", err);
-//         }
-//         Ok(parsed) => {
-//             println!("{:?}", parsed);
-//             let ir = parsed.to_ir();
-//             println!("{:?}", ir);
-//             let output = ir.to_string(true);
-//             println!("{}", output);
-//             fs::write("examples/output.html", output)
-//                 .expect("Something went wrong writing the file");
-//         }
-//     }
-// }
